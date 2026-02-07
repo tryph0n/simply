@@ -94,13 +94,13 @@ The Grain-native data pipeline is in `data_lib.py`. Key concepts:
 ### Registries
 - **`DataSourceRegistry`** - Raw data sources with `__len__`/`__getitem__` methods.
   Used via `DatasetConfig(source='name')`.
-- **`DataConfigRegistry`** - Config dataclasses (for serialization) and preset
+- **`DatasetConfigRegistry`** - Config dataclasses (for serialization) and preset
   config factory functions. Use `dataset_config='preset_name'` for string shorthand.
 
 ### Configuration Classes
-- **`TFDSSourceConfig`** - TFDS dataset name and split
-- **`HFDatasetSourceConfig`** - HuggingFace datasets (name, split, subset)
-- **`ArrayRecordSourceConfig`** - ArrayRecord files (supports glob patterns)
+- **`TFDSSource`** - TFDS dataset name and split
+- **`HFSource`** - HuggingFace datasets (name, split, subset)
+- **`ArrayRecordSource`** - ArrayRecord files (supports glob patterns)
 - **`DatasetConfig`** - Single dataset configuration
 - **`MixtureConfig`** - Multiple datasets with weights
 
@@ -108,13 +108,13 @@ The Grain-native data pipeline is in `data_lib.py`. Key concepts:
 ```python
 @dataclasses.dataclass
 class DatasetConfig:
-  source: str | TFDSSourceConfig | HFDatasetSourceConfig | ArrayRecordSourceConfig
+  source: str | TFDSSource | HFSource | ArrayRecordSource
   lm_format_name: str | None = 'Pretrain'  # None = raw
   packing: str = 'concat_split'
   data_key: str = 'text'
   tokenizer_name: str | None = None
   add_eos: bool = True
-  add_bos: bool = False
+  add_bos: bool = True
   trainable_roles: tuple[str, ...] | None = None  # For chat: roles in loss
 ```
 
@@ -145,10 +145,10 @@ MixtureConfig(
 
 ```python
 # Register a preset
-@DataConfigRegistry.register
+@DatasetConfigRegistry.register
 def c4_train_pt():
     return DatasetConfig(
-        source=TFDSSourceConfig(name='c4:3.1.0', split='train'),
+        source=TFDSSource(name='c4:3.1.0', split='train'),
         lm_format_name='Pretrain',
     )
 
@@ -163,7 +163,7 @@ dataset_config = 'c4_train_pt'
   (call with `Registry.get_instance(name)`)
 - **Chat tokenization**: `LMFormat.format_tokens()` is the single source of truth
   for chat formatting + tokenization. `ChatFormatTransform` delegates to it.
-- **ArrayRecord glob**: `ArrayRecordSourceConfig` supports glob patterns
+- **ArrayRecord glob**: `ArrayRecordSource` supports glob patterns
   (expanded before passing to `ArrayRecordDataSource`)
 - **Registry serialization**: `pytree.dump()/load()` serializes dataclass instances
   using `__registered_name__`. Factory functions in same registry are fine - they

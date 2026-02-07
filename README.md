@@ -25,7 +25,7 @@ export JAX_DISABLE_JIT=True; EXP=simply_local_test_1; rm -rf /tmp/${EXP}; python
 The main dependencies are:
 [Jax](https://jax.readthedocs.io/en/latest/index.html) for model and training.
 [Orbax](https://orbax.readthedocs.io/en/latest/) for checkpoint management.
-[SeqIO](https://github.com/google/seqio) for data pipeline.
+[Grain](https://github.com/google/grain) for data pipeline.
 
 Install dependencies:
 
