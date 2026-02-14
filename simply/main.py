@@ -166,6 +166,9 @@ def load_experiment_config():
 def main(argv: Sequence[str]) -> None:
   del argv
 
+  import jax
+  jax.distributed.initialize()  # setup jax for multi-host training.
+
   experiment_helper.setup_work_unit()
   config, experiment_dir = load_experiment_config()
   logging.info('config: %s', config)

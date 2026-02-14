@@ -404,6 +404,7 @@ def _inner_partition_with_minimum_redundancy(
     ],
 ) -> Sequence[Sequence[int]]:
   """Fits partition to a shape."""
+
   if (shape, mesh_axis_sizes) in cache:
     return cache[(shape, mesh_axis_sizes)]
 
@@ -411,10 +412,14 @@ def _inner_partition_with_minimum_redundancy(
   if not mesh_axis_sizes:
     return best_placement
 
+  ideal_placement_value = np.prod(mesh_axis_sizes)
+
   placement_value_fn = lambda placement: np.prod(
       [np.prod(p) for p in placement]
   )
   best_value = placement_value_fn(best_placement)
+  if best_value == ideal_placement_value:
+    return best_placement
 
   for i, dim in enumerate(shape):
     for j, axis_size in enumerate(mesh_axis_sizes):
@@ -439,6 +444,8 @@ def _inner_partition_with_minimum_redundancy(
         if value > best_value:
           best_placement = unsorted_placement
           best_value = value
+        if value == ideal_placement_value:
+          return best_placement
 
   return best_placement
 
@@ -464,9 +471,9 @@ def batch_partition_with_minimum_redundancy(
     sorted_best_placement = _inner_partition_with_minimum_redundancy(
         tuple(sorted_shape), tuple(sorted_axis_sizes), cache=cache
     )
-    unsorted_best_placement = [None] * len(shape)
-    for index, p in zip(sorted_indices, sorted_best_placement, strict=True):
-      unsorted_best_placement[index] = p
+    unsorted_best_placement = common.unsorted(
+        sorted_best_placement, sorted_indices
+    )
 
     axis_name_map = collections.defaultdict(list)
     for axis_name, axis_size in zip(

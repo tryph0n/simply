@@ -273,6 +273,31 @@ class Qwen2Format(CheckpointFormat):
     _, experts = zip(*sorted(experts, key=lambda x: x[0]))
     return jnp.stack(experts, axis=0)
 
+  def _split_head(
+      self, v: jax.Array, per_head_dim: int, axis: int = 0
+  ) -> jax.Array:
+    """Splits combined head into multiple heads."""
+    new_shape = (
+        *v.shape[:axis],
+        v.shape[axis] // per_head_dim,
+        per_head_dim,
+        *v.shape[axis + 1 :],
+    )
+    new_partition = sharding_lib.partition_with_minimum_redundancy(
+        new_shape,
+        js.get_abstract_mesh().axis_names,
+        js.get_abstract_mesh().axis_sizes,
+    )
+    return sharding_lib.with_sharding_constraint(
+        jnp.reshape(
+            sharding_lib.with_sharding_constraint(
+                v, (*new_partition[: axis + 1], *new_partition[axis + 2 :])
+            ),
+            new_shape,
+        ),
+        new_partition,
+    )
+
   def transforms(
       self, stored_state: PyTree, target_abstract_state: PyTree = None
   ) -> PyTree:
@@ -298,18 +323,16 @@ class Qwen2Format(CheckpointFormat):
       ):
         new_k = f'params/block_{m.group(1)}/attn/{m.group(2)}'
         transformed_state[new_k] = jnp.einsum(
-            'nhd->dnh', jnp.reshape(v, (-1, per_head_dim, *v.shape[1:]))
+            'nhd->dnh', self._split_head(v, per_head_dim)
         )
       elif m := re.fullmatch(
           r'model.layers.(\d+).self_attn.([qkv])_proj.bias', k
       ):
         new_k = f'params/block_{m.group(1)}/attn/{m.group(2)}_bias'
-        transformed_state[new_k] = jnp.reshape(v, (-1, per_head_dim))
+        transformed_state[new_k] = self._split_head(v, per_head_dim)
       elif m := re.fullmatch(r'model.layers.(\d+).self_attn.o_proj.weight', k):
         new_k = f'params/block_{m.group(1)}/attn/o_proj'
-        transformed_state[new_k] = jnp.reshape(
-            v, (*v.shape[:-1], -1, per_head_dim)
-        )
+        transformed_state[new_k] = self._split_head(v, per_head_dim, axis=1)
       elif m := re.fullmatch(r'model.layers.(\d+).mlp.up_proj.weight', k):
         new_k = f'params/block_{m.group(1)}/ffn_0/w'
         transformed_state[new_k] = jnp.transpose(v)
@@ -453,10 +476,17 @@ def resolve_checkpoint_handler_from_path(
     ckpt_path: str,
 ) -> ocp.CheckpointHandler:
   """Resolves a checkpoint handler from a checkpoint path."""
-  checkpoint_metadata = ocp.metadata.get_step_metadata(ckpt_path)
-  if checkpoint_metadata.item_handlers is not None:
-    return resolve_checkpoint_handler_from_json(
-        checkpoint_metadata.item_handlers
+  try:
+    checkpoint_metadata = ocp.metadata.get_step_metadata(ckpt_path)
+    if checkpoint_metadata.item_handlers is not None:
+      return resolve_checkpoint_handler_from_json(
+          checkpoint_metadata.item_handlers
+      )
+  except ValueError:
+    logging.warning(
+        'Falling back to read from _METADATA, because failed to get step'
+        ' metadata from %s',
+        ckpt_path,
     )
   # Some old ORBAX checkpoints do not have handler information written in
   # checkpoint metadata. We need to infer it from the checkpoint structure.

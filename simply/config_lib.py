@@ -21,10 +21,10 @@ import os
 from typing import Any, ClassVar, Self
 
 import jax
-
 from simply import data_lib
 from simply.utils import common
 from simply.utils import evaluation_lib
+from simply.utils import initializer
 from simply.utils import optimizers as opt_lib
 from simply.utils import position_encoding as pe_lib
 from simply.utils import registry
@@ -288,6 +288,8 @@ class BaseExperimentConfig(ExperimentConfig):
   # expand_factor * model_dim. Otherwise, expand_dim will be set to this value.
   ffn_expand_dim: int | None = None
   ffn_activation: str = 'gelu'
+  ffn_weight_init: initializer.Initializer = initializer.XavierUniformInit()
+  attn_weight_init: initializer.Initializer = initializer.XavierUniformInit()
   embedding_lookup_scale: float | None = 1.0
   norm_scale_plus_one: bool = True
   attn_soft_cap: float = 50.0  # If negative, no softcap.
@@ -1063,10 +1065,7 @@ def gemma2_2b_gsm8k_0shot_rl():
       max_num_samples_per_train_batch=None,
       # TODO: Change the extra_eos_tokens when the prompt is improved.
       extra_eos_tokens=newlines_from_counts(range(3, 6)),
-      # Optimizer configs.
-      optimizer=opt_lib.Adam(beta1=0.9, beta2=0.95, epsilon=1e-8),
-      weight_decay=0.0,
-      lr=opt_lib.LinearWarmupCosineDecay(
+      lr=opt_lib.LinearWarmupConstant(
           value=1e-7,
           warmup_steps=1,
       ),

@@ -244,6 +244,7 @@ def updated_decode_state(
     segment_ids: Array,
     decode_state: PyTree,
     window_size: int = 0,
+    update_kv_cache: bool = True,
 ) -> tuple[Array, Array, Array, Array, PyTree]:
   """Updates decode state when decode_state is not None.
 
@@ -263,6 +264,7 @@ def updated_decode_state(
       None when not decoding.
     window_size: The size of the sliding window. If greater than 0, the cache
       will be updated with the sliding window.
+    update_kv_cache: Whether to update the kv cache.
 
   Returns:
     The updated cached k, v, segment_positions, segment_ids, decode_state. They
@@ -271,6 +273,7 @@ def updated_decode_state(
     metadata, so that decoding can use this information to properly truncate the
     cache.
   """
+
   if decode_state is None:
     return k, v, segment_positions, segment_ids, decode_state
 
@@ -279,28 +282,39 @@ def updated_decode_state(
   if 'k' in decode_state and 'v' in decode_state:
     k_cache = decode_state['k']
     v_cache = decode_state['v']
-    # Assume that we are dealing with one decode step.
-    assert segment_positions.shape[1] == 1
-    # Assume that all the tokens in the batch share the same position.
-    position = segment_positions[0][0]
-    cache_position = position
-    if window_size > 0:
-      cache_position = cache_position % (window_size + 1)
     # Insert the new key and value at the cache_position.
-    k = jax.lax.dynamic_update_slice_in_dim(k_cache, k, cache_position, axis=1)
-    v = jax.lax.dynamic_update_slice_in_dim(v_cache, v, cache_position, axis=1)
-    segment_positions = jax.lax.dynamic_update_slice_in_dim(
-        decode_state['segment_positions'],
-        segment_positions,
-        cache_position,
-        axis=1,
-    )
-    segment_ids = jax.lax.dynamic_update_slice_in_dim(
-        decode_state['segment_ids'],
-        segment_ids,
-        cache_position,
-        axis=1,
-    )
+    if update_kv_cache:
+      # Assume that we are dealing with one decode step.
+      assert segment_positions.shape[1] == 1
+      # Assume that all the tokens in the batch share the same position.
+      position = segment_positions[0][0]
+      cache_position = position
+      if window_size > 0:
+        cache_position = cache_position % (window_size + 1)
+
+      k = jax.lax.dynamic_update_slice_in_dim(
+          k_cache, k, cache_position, axis=1
+      )
+      v = jax.lax.dynamic_update_slice_in_dim(
+          v_cache, v, cache_position, axis=1
+      )
+      segment_positions = jax.lax.dynamic_update_slice_in_dim(
+          decode_state['segment_positions'],
+          segment_positions,
+          cache_position,
+          axis=1,
+      )
+      segment_ids = jax.lax.dynamic_update_slice_in_dim(
+          decode_state['segment_ids'],
+          segment_ids,
+          cache_position,
+          axis=1,
+      )
+    else:
+      k = k_cache
+      v = v_cache
+      segment_positions = decode_state['segment_positions']
+      segment_ids = decode_state['segment_ids']
   elif window_size > 0 and k.shape[1] > window_size + 1:
     # Properly truncate the cache to window_size.
     if (prefill_position := decode_state.get('prefill_position')) is None:
@@ -505,6 +519,7 @@ class FeedForward(module.SimplyModule):
   ffn_expand_dim: int | None = None
   ffn_use_bias: bool = True
   ffn_activation: str = 'gelu'
+  ffn_weight_init: initializer.Initializer = initializer.XavierUniformInit()
 
   @property
   def expand_dim(self) -> int:
@@ -522,6 +537,7 @@ class FeedForward(module.SimplyModule):
         # Sharding related.
         weight_partition=self.sharding_config.ffn0_partition,
         output_partition=self.sharding_config.ffn0_activation_partition,
+        weight_init=self.ffn_weight_init,
     )
     if self.use_gated_activation_in_ffn:
       self.ffn_0_gate = EinsumLinear(
@@ -533,6 +549,7 @@ class FeedForward(module.SimplyModule):
           # Sharding related.
           weight_partition=self.sharding_config.ffn0_partition,
           output_partition=self.sharding_config.ffn0_activation_partition,
+          weight_init=self.ffn_weight_init,
       )
     self.ffn_1 = EinsumLinear(
         eqn='io,...i->...o',
@@ -543,6 +560,7 @@ class FeedForward(module.SimplyModule):
         # Sharding related.
         weight_partition=self.sharding_config.ffn1_partition,
         output_partition=self.sharding_config.activation_partition,
+        weight_init=self.ffn_weight_init,
     )
 
   def init(self, prng_key: PRNGKey) -> PyTree:
@@ -634,6 +652,7 @@ class MoEFeedForward(FeedForward):
         # Sharding related.
         weight_partition=(None, None),
         output_partition=router_output_partition,
+        weight_init=self.ffn_weight_init,
     )
     self.ffn0_partition = self.sharding_config.ffn0_partition
     self.ffn_0 = EinsumLinear(
@@ -644,6 +663,7 @@ class MoEFeedForward(FeedForward):
         activation_dtype=self.activation_dtype,
         # Sharding related.
         weight_partition=self.ffn0_partition,
+        weight_init=self.ffn_weight_init,
     )
     self.ffn1_partition = self.sharding_config.ffn1_partition
     if self.use_gated_activation_in_ffn:
@@ -655,6 +675,7 @@ class MoEFeedForward(FeedForward):
           activation_dtype=self.activation_dtype,
           # Sharding related.
           weight_partition=self.ffn0_partition,
+          weight_init=self.ffn_weight_init,
       )
     self.ffn_1 = EinsumLinear(
         eqn='eio,e...i->e...o',
@@ -664,6 +685,7 @@ class MoEFeedForward(FeedForward):
         activation_dtype=self.activation_dtype,
         # Sharding related.
         weight_partition=self.ffn1_partition,
+        weight_init=self.ffn_weight_init,
     )
 
   def init(self, prng_key: PRNGKey) -> PyTree:
@@ -1214,6 +1236,41 @@ class Attention(module.SimplyModule):
   # Position encoding (None = NoPE, no positional encoding).
   position_encoding: pe_lib.PositionEncodingConfig | None = pe_lib.RoPE()
 
+  def _scale_qk(
+      self,
+      q: Array,
+      k: Array,
+      segment_positions: Array,
+      params: PyTree,
+  ) -> tuple[Array, Array]:
+    """Scales query and key.
+
+    Args:
+      q: Query array.
+      k: Key array.
+      segment_positions: Segment positions array.
+      params: Module parameters.
+
+    Returns:
+      A tuple of scaled (q, k).
+    """
+
+    if self.qk_norm:
+      q = self.qk_norm.apply(params['q_norm'], q)
+      k = self.qk_norm.apply(params['k_norm'], k)
+
+    if self.position_encoding is not None:
+      q = self.position_encoding.apply(q, segment_positions=segment_positions)
+      k = self.position_encoding.apply(k, segment_positions=segment_positions)
+
+    if self.use_per_dim_scale:
+      q = self.per_dim_scale.apply(params['per_dim_scale'], q)
+    elif self.query_scale > 0:
+      q = q / self.query_scale
+    else:
+      q = q / jnp.sqrt(self.per_head_dim)
+    return q, k
+
   def setup(self) -> None:
     if self.use_per_dim_scale:
       self.per_dim_scale = PerDimScale(
@@ -1304,20 +1361,7 @@ class Attention(module.SimplyModule):
     # v: [batch_size, seq_len, n_heads, per_head_dim]
     v = self.v_proj.apply(params['v_proj'], x)
 
-    if self.qk_norm:
-      q = self.qk_norm.apply(params['q_norm'], q)
-      k = self.qk_norm.apply(params['k_norm'], k)
-
-    if self.position_encoding is not None:
-      q = self.position_encoding.apply(q, segment_positions=segment_positions)
-      k = self.position_encoding.apply(k, segment_positions=segment_positions)
-
-    if self.use_per_dim_scale:
-      q = self.per_dim_scale.apply(params['per_dim_scale'], q)
-    elif self.query_scale > 0:
-      q = q / self.query_scale
-    else:
-      q = q / jnp.sqrt(self.per_head_dim)
+    q, k = self._scale_qk(q, k, segment_positions, params)
 
     # n_groups = n_heads // n_kv_heads
     # q in [batch_size, seq_len, n_groups, n_kv_heads, per_head_dim]
@@ -1345,6 +1389,7 @@ class Attention(module.SimplyModule):
       q = einops.rearrange(q, '1 l g n_kv_heads ... -> l (n_kv_heads g) ...')
       k = einops.rearrange(k, '1 l ... -> l ...')
       v = einops.rearrange(v, '1 l ... -> l ...')
+      # TODO: Pass update_kv_cache into rpa.DecodeState
       decode_state, output = decode_state.update_decode_state_and_compute_attn(
           q=common.RaggedArray(q, extra_inputs['lens']),
           k=k,
@@ -1360,6 +1405,11 @@ class Attention(module.SimplyModule):
       ):
         decode_state = decode_state or {}
         decode_state['prefill_position'] = prefill_position
+
+      update_kv_cache = True
+      if extra_inputs is not None:
+        update_kv_cache = extra_inputs.get('update_kv_cache', True)
+
       k, v, kv_segment_positions, kv_segment_ids, decode_state = (
           updated_decode_state(
               k=k,
@@ -1368,6 +1418,7 @@ class Attention(module.SimplyModule):
               segment_ids=segment_ids,
               decode_state=decode_state,
               window_size=self.window_size,
+              update_kv_cache=update_kv_cache,
           )
       )
 
@@ -1565,6 +1616,8 @@ class TransformerBlock(module.SimplyModule):
   # Mixed precision related.
   activation_dtype: DTypeLike = 'bfloat16'
   # Below are for experimental usage.
+  attn_weight_init: initializer.Initializer = initializer.XavierUniformInit()
+  ffn_weight_init: initializer.Initializer = initializer.XavierUniformInit()
   ffn_expand_dim: int | None = None
   use_flash_attention: bool = False
   flash_attention_block_size: int = 512
@@ -1680,6 +1733,7 @@ class TransformerBlock(module.SimplyModule):
         query_scale=self.query_scale,
         total_num_pages=self.total_num_pages,
         page_size=self.page_size,
+        weight_init=self.attn_weight_init,
     )
     if self.use_moe:
       self.ffn = MoEFeedForward(
@@ -1719,6 +1773,7 @@ class TransformerBlock(module.SimplyModule):
           ffn_expand_dim=self.ffn_expand_dim,
           ffn_use_bias=self.ffn_use_bias,
           ffn_activation=self.ffn_activation,
+          ffn_weight_init=self.ffn_weight_init,
       )
 
   def init(self, prng_key: PRNGKey) -> PyTree:
@@ -1909,6 +1964,8 @@ class TransformerLM(module.SimplyModule):
           query_scale=config.query_scale,
           total_num_pages=total_num_pages,
           page_size=config.page_size,
+          ffn_weight_init=config.ffn_weight_init,
+          attn_weight_init=config.attn_weight_init,
       )
 
     self.blocks = []

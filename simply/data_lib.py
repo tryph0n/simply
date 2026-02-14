@@ -98,9 +98,15 @@ HF_VOCABS = [
 
 
 def register_spm_vocabs():
+  """Registers SentencePiece vocabularies in the TokenizerRegistry."""
+
   vocabs = (
-      OPENMIX_V1_VOCABS + OPENMIX_V2_VOCABS +
-      OPENMIX_V3_VOCABS + GEMMA2_VOCABS)
+      OPENMIX_V1_VOCABS
+      + OPENMIX_V2_VOCABS
+      + OPENMIX_V3_VOCABS
+      + GEMMA2_VOCABS
+      + GEMMA3_VOCABS
+  )
   for name, vocab_path in vocabs:
     # Use default argument to capture loop variables correctly.
     tokenization.TokenizerRegistry.register(
@@ -287,16 +293,74 @@ class ArrayRecordSource:
     return self._source[index]
 
 
+@DataSourceRegistry.register
+@dataclasses.dataclass(frozen=True)
+class BagzSource:
+  """Bagz data source with glob expansion and lazy loading.
+
+  Bagz is an efficient file format for random access to large datasets.
+
+  Attributes:
+    paths: File path(s) or glob pattern(s) to Bagz files. Can be a single string
+      or a sequence of strings. If a single string is provided, it is
+      automatically converted to a single-element tuple.
+      Examples: '/data/train.bagz' or ('/data/train-*.bagz',)
+
+  Example:
+    # Single file (string)
+    source = BagzSource(paths='/data/train.bagz')
+
+    # Single file (tuple)
+    source = BagzSource(paths=('/data/train.bagz',))
+
+    # Multiple shards with glob
+    source = BagzSource(paths=(
+        '/data1/train-*.bagz',
+        '/data2/train-*.bagz',
+        '/data3/train-*.bagz',
+    ))
+
+    # In DatasetConfig
+    dataset = DatasetConfig(
+        source=BagzSource(paths=('/data/pile/*.bagz',)),
+        lm_format_name='Pretrain',
+    )
+  """
+
+  paths: str | Sequence[str]
+
+  @functools.cached_property
+  def _source(self):
+    """Lazily expands paths and creates a Grain BagDataSource."""
+    expanded_paths = []
+    paths = (self.paths,) if isinstance(self.paths, str) else self.paths
+    for pattern in paths:
+      import glob
+      matches = glob.glob(pattern)
+      if matches:
+        expanded_paths.extend(sorted(matches))
+      else:
+        expanded_paths.append(pattern)
+    return grain.BagDataSource(expanded_paths)
+
+  def __len__(self) -> int:
+    return len(self._source)
+
+  def __getitem__(self, index: int):
+    return self._source[index]
+
+
 @DatasetConfigRegistry.register
 @dataclasses.dataclass(frozen=True)
 class DatasetConfig:
   """Configuration for a single dataset.
 
-  The data source can be specified in four ways:
+  The data source can be specified in five ways:
   1. source_name (str): Looks up in DataSourceRegistry
   2. source (TFDSSource): Uses TFDS with specified name and split
   3. source (HFSource): Uses HuggingFace datasets
   4. source (ArrayRecordSource): Uses ArrayRecord files directly
+  5. source (BagzSource): Uses Bagz files directly
 
   Attributes:
     source: Data source - either a string (registry name) or source object.
@@ -345,7 +409,7 @@ class DatasetConfig:
     )
   """
 
-  source: str | TFDSSource | HFSource | ArrayRecordSource
+  source: str | SimpleDataSource
   lm_format_name: str | None = 'Pretrain'  # None = raw, 'Pretrain' = tokenize
   packing: str = 'concat_split'
   data_key: str = 'text'
