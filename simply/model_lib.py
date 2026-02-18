@@ -202,41 +202,6 @@ class PerDimScale(module.SimplyModule):
     return x
 
 
-def rotary_positional_embedding(
-    embedding_mat,
-    segment_positions=None,
-    min_timescale=1,
-    max_timescale=10_000,
-    scale_factor=1.0,
-):
-  embedding_dims = embedding_mat.shape[-1]
-  half_embedding_dim = embedding_dims // 2
-  fraction = 2 * jnp.arange(0, half_embedding_dim) / embedding_dims
-  timescale = min_timescale * (max_timescale / min_timescale)**fraction
-  query_segment_pos = segment_positions
-  if query_segment_pos is None:
-    seq_length = embedding_mat.shape[1]
-    query_segment_pos = jnp.arange(
-        seq_length, dtype=jnp.float32)[jnp.newaxis, :]
-  else:
-    query_segment_pos = jnp.asarray(query_segment_pos, dtype=jnp.float32)
-  query_segment_pos = query_segment_pos[:, :, jnp.newaxis, jnp.newaxis]
-  timescale = timescale[jnp.newaxis, jnp.newaxis, jnp.newaxis, :]
-  sinusoid_inp = query_segment_pos / timescale / scale_factor
-  sin = jnp.sin(sinusoid_inp)
-  cos = jnp.cos(sinusoid_inp)
-  # Convert to float32.
-  embedding_dtype = embedding_mat.dtype
-  embedding_mat = jnp.asarray(embedding_mat, jnp.float32)
-  first_half, second_half = jnp.split(embedding_mat, 2, axis=-1)
-  first_part = first_half * cos - second_half * sin
-  second_part = second_half * cos + first_half * sin
-  embedding_mat = jnp.concatenate([first_part, second_part], axis=-1)
-  # Convert back to original dtype.
-  embedding_mat = jnp.asarray(embedding_mat, embedding_dtype)
-  return embedding_mat
-
-
 def updated_decode_state(
     k: Array,
     v: Array,
@@ -252,7 +217,7 @@ def updated_decode_state(
   previous decode steps. The input key, value, segment_positions, segment_ids
   will be written at the cache_position in the decode_state caches. decode_state
   also contains 'prefill_position' at prefill stage, which is the position where
-  the decoding will starts. This is used to properly truncate the cache to
+  the decoding will start. This is used to properly truncate the cache to
   corresponding window.
 
   Args:
