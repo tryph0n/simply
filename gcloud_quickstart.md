@@ -100,14 +100,14 @@ gcloud compute tpus tpu-vm ssh $TPU_NAME \
 Then on the VM:
 
 ```bash
-# Install Python 3.11 (Simply requires 3.11+)
+# Install Python 3.12 (Simply requires 3.12+)
 sudo apt-get update
 sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt-get install -y python3.11 python3.11-venv python3.11-dev
+sudo apt-get install -y python3.12 python3.12-venv python3.12-dev
 
 # Create venv and install deps
-python3.11 -m venv /tmp/simply_venv
+python3.12 -m venv /tmp/simply_venv
 source /tmp/simply_venv/bin/activate
 pip install -U 'jax[tpu]' \
     -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
@@ -116,7 +116,7 @@ pip install -U 'jax[tpu]' \
 gcloud storage cp $BUCKET/code/simply.tar.gz /tmp/
 mkdir -p /tmp/simply && cd /tmp/simply
 tar xzf /tmp/simply.tar.gz
-pip install -r requirements.txt
+pip install ".[tpu,tfds,gcloud]"
 
 # Point Simply at GCS assets
 export SIMPLY_MODELS=$BUCKET/models/

@@ -31,6 +31,9 @@ tfds = [
     "tensorflow; sys_platform == 'darwin'",
     "tensorflow_datasets",
 ]
+gcloud = [
+    "gcsfs",
+]
 math-eval = [
     "sympy",
     "pylatexenc",
