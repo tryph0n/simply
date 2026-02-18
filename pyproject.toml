@@ -12,6 +12,7 @@ dependencies = [
     "grain>=0.2.15",
     "orbax>=0.1.9",
     "sentencepiece",
+    "setuptools<81",
     "tensorboard>=2.20.0",
     "tensorboardX",
     "jax",
